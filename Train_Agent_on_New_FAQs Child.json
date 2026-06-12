@@ -1,0 +1,194 @@
+{
+  "name": "Train_Agent_on_New_FAQs Child",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -704,
+        -80
+      ],
+      "id": "1e4b51ef-f0f3-44b1-b6a3-29af124445fc",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, question, answer\nFROM faqs\nWHERE learned = false;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -496,
+        -80
+      ],
+      "id": "64fcb122-a86c-4210-8055-d0dc6f5c29ff",
+      "name": "Get New FAQs",
+      "credentials": {
+        "postgres": {
+          "id": "MwC1yijgmrukymoC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => ({\n  json: {\n    id: item.json.id,\n    text: `${item.json.question} → ${item.json.answer}`\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        -80
+      ],
+      "id": "0b695524-f352-40fe-933c-f5b0378ca22f",
+      "name": "Combine Question + Answer"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json[\"text\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -16,
+        -80
+      ],
+      "id": "7a4946e6-7c93-494a-bddf-0c3e5646aedd",
+      "name": "Generate Embedding",
+      "credentials": {
+        "openAiApi": {
+          "id": "ySMZRqingkjTUJ5Q",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pair each embedding result back to its FAQ id by index\nconst inputs = $('Combine Question + Answer').all();\nconst results = $input.all();\n\nconst out = [];\nfor (let i = 0; i < results.length; i++) {\n  out.push({\n    json: {\n      id: inputs[i].json.id,\n      embedding: JSON.stringify(results[i].json.data[0].embedding)\n    }\n  });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        304,
+        -80
+      ],
+      "id": "47daddfb-db27-4f03-abea-2805768acfd6",
+      "name": "Extract the Vector"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE faqs\nSET embedding = $1::vector,\n    learned = true\nWHERE id = $2;",
+        "options": {
+          "queryReplacement": "={{ [$json[\"embedding\"], $json[\"id\"]] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        704,
+        -80
+      ],
+      "id": "43dd8ee3-1895-4405-bc99-78f43eb7d523",
+      "name": "Passing Embeddings to DB",
+      "credentials": {
+        "postgres": {
+          "id": "MwC1yijgmrukymoC",
+          "name": "Postgres account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Get New FAQs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get New FAQs": {
+      "main": [
+        [
+          {
+            "node": "Combine Question + Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Question + Answer": {
+      "main": [
+        [
+          {
+            "node": "Generate Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embedding": {
+      "main": [
+        [
+          {
+            "node": "Extract the Vector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract the Vector": {
+      "main": [
+        [
+          {
+            "node": "Passing Embeddings to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "193a970c-95b1-449f-81d2-eba32bb39dd5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "94334e2d77c2e31e77797d8979cf8371d331b9c03663f35ade81039ef25a7154"
+  },
+  "id": "2f9VVE320st50QIb",
+  "tags": []
+}

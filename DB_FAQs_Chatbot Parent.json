@@ -1,0 +1,604 @@
+{
+  "name": "DB_FAQs_Chatbot Parent",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {
+          "responseMode": "responseNodes"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -1360,
+        -336
+      ],
+      "id": "e72bbbf7-2600-4873-9949-9b15d26dbe45",
+      "name": "When chat message received",
+      "webhookId": "e05fe2b4-8721-431a-9f3f-ee306bbc3d45"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e960ce47-aebe-4fcf-9c69-14d6048981ab",
+              "name": "question",
+              "value": "={{ ($json.chatInput || $json.body?.message || \"\").trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "a1b2c3d4-0001-4000-8000-000000000001",
+              "name": "sessionId",
+              "value": "={{ $json.sessionId || $json.body?.sessionId || \"default-session\" }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1120,
+        -336
+      ],
+      "id": "54c40142-2950-465b-a2fe-809f64b05737",
+      "name": "Map the question message"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize SAP -> SAP B1, carry sessionId forward\nlet question = $json[\"question\"] || \"\";\nquestion = question.replace(/\\bSAP\\b/gi, \"SAP B1\");\n\nreturn [\n  {\n    json: {\n      question,\n      sessionId: $json.sessionId || \"default-session\"\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -896,
+        -336
+      ],
+      "id": "1d26b99f-010e-458b-a66d-c314c68de077",
+      "name": "Normalize SAP term"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/embeddings",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "text-embedding-3-small"
+            },
+            {
+              "name": "input",
+              "value": "={{ $json[\"question\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -752,
+        -336
+      ],
+      "id": "a017fcd2-1ba8-4ec8-af6c-1efb3fe363d9",
+      "name": "Embed User Question"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build vector string for pgvector + keep question/sessionId\nconst question = $('Normalize SAP term').item.json.question;\nconst sessionId = $('Normalize SAP term').item.json.sessionId;\nconst vector = JSON.stringify($json.data[0].embedding);\n\nreturn [\n  {\n    json: {\n      question,\n      sessionId,\n      vector\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        -320
+      ],
+      "id": "273a3c0c-b04d-4225-813c-0bbcfc0d9307",
+      "name": "Prepare Vector"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  id,\n  question,\n  answer,\n  1 - (embedding <=> $1::vector) AS similarity\nFROM faqs\nWHERE embedding IS NOT NULL\nORDER BY embedding <=> $1::vector\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [$json.vector] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -176,
+        -320
+      ],
+      "id": "fa50631a-0489-44a3-bb1a-9b4efff653f5",
+      "name": "Get the Q and A from DB",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "MwC1yijgmrukymoC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4e3dd9eb-8b82-408f-a063-15188ecce72a",
+              "leftValue": "={{ $json.similarity || 0 }}",
+              "rightValue": 0.5,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        48,
+        -320
+      ],
+      "id": "61832a68-e56b-41b9-b392-04981ef9ce43",
+      "name": "Check if FAQ Exists"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Build friendly rewrite prompt from DB answer =====\nconst question = $('Normalize SAP term').item.json.question || \"No question provided.\";\nconst answer = $json.answer || \"\";\n\nconst prompt = `\nYou are a warm, intelligent, and supportive AI assistant who helps users by explaining things clearly and kindly.\n\nYour task:\n- Understand the user's question carefully.\n- If an answer exists, rewrite it in a friendly, conversational, and natural way.\n- The answer should sound supportive and easy to follow, like a helpful coworker explaining it.\n- Avoid using markdown formatting like *, **, _, or numbered lists (1., 2., 3.).\n- Use plain text with short paragraphs and natural line breaks.\n- Always keep a positive and reassuring tone.\n- You can add small helpful notes, like suggesting to contact an admin or offering additional help.\n\nQuestion:\n${question}\n\nExisting Answer:\n${answer || \"No existing answer found.\"}\n\nNow, write the best possible answer in a friendly, supportive tone, directly addressing the question.\n`;\n\nreturn [\n  {\n    json: {\n      prompt,\n      question,\n      answer\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        -320
+      ],
+      "id": "56e3d025-f993-45bc-b1ea-2eebd0f60405",
+      "name": "Prompt for the Agent1"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        448,
+        -128
+      ],
+      "id": "2574ead2-e082-41a3-a496-3023578f47ab",
+      "name": "OpenAI Chat Model"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        528,
+        -320
+      ],
+      "id": "06b3dec9-54a4-4ea0-ac9a-a611fb72cc80",
+      "name": "Elaborate the Answer"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass the agent answer through as reply\nconst input = $json;\nconst answer = input.output || input.answer || \"I'm sorry, I don't have an answer for that.\";\n\nreturn [\n  {\n    json: {\n      reply: answer\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        -320
+      ],
+      "id": "74344da9-55a9-4b16-b357-948d1a4cb474",
+      "name": "Change keyword"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"reply\": {{JSON.stringify($json[\"reply\"])}}\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1232,
+        -320
+      ],
+      "id": "2d59a56e-dcf4-4610-bb21-92cbb4dbb5ae",
+      "name": "Respond to Chat Input"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Build prompt for unknown question (uses ORIGINAL user question) =====\nconst userQuestion = $('Normalize SAP term').item.json.question || \"No question provided\";\nconst sessionId = $('Normalize SAP term').item.json.sessionId || \"default-session\";\n\nconst prompt = `\nYou are a helpful FAQ assistant for a company.\nA user asked the following question that was not found in the FAQ database:\n\nQuestion: \"${userQuestion}\"\n\nYour tasks:\n1. Give a short, clear, and accurate answer using your best general knowledge.\n2. If the question is unclear or subjective, give your best helpful guidance.\n3. Keep your answer friendly and easy to read.\n4. Do not mention that it wasn't found in the database.\n5. Respond naturally like a human expert.\n6. Respond ONLY with raw JSON, no markdown fences, in this exact shape:\n{\n  \"question\": \"user question here\",\n  \"ai_answer\": \"your generated answer here\"\n}\n`;\n\nreturn [\n  {\n    json: {\n      prompt,\n      question: userQuestion,\n      sessionId\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        64
+      ],
+      "id": "816ee60a-27fa-4271-87dc-bdc05f413499",
+      "name": "Prompt for Agent2"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        272
+      ],
+      "id": "c0c8e21d-bb1b-418f-9b28-765f1d7476c4",
+      "name": "OpenAI Chat Model1"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.sessionId }}",
+        "contextWindowLength": 20
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        416,
+        288
+      ],
+      "id": "6aba35b6-0f54-426d-8d32-95fab8c82f97",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        384,
+        64
+      ],
+      "id": "278048fb-4f59-4492-9bf1-e8ca9469005b",
+      "name": "Generate Answer"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Parse agent JSON output, with safe fallbacks =====\nconst raw = $json.output || \"\";\n\n// Strip possible markdown fences\nconst cleaned = raw.replace(/```json|```/gi, \"\").trim();\n\nlet parsed = {};\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (error) {\n  parsed = {};\n}\n\nconst question =\n  parsed.question?.trim() ||\n  $('Normalize SAP term').item.json.question ||\n  \"No question found.\";\n\nconst answer =\n  parsed.ai_answer?.trim() ||\n  parsed.answer?.trim() ||\n  cleaned ||\n  \"No answer found.\";\n\nreturn [\n  {\n    json: {\n      question,\n      answer\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        64
+      ],
+      "id": "751be377-6103-4d26-ba05-488b4504c616",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO faqs (question, answer, learned)\nVALUES ($1, $2, false);",
+        "options": {
+          "queryReplacement": "={{ [$json[\"question\"], $json[\"answer\"]] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1008,
+        336
+      ],
+      "id": "d5f11097-ced5-4522-bf2d-26fd62f469b2",
+      "name": "Save New FAQ to DB",
+      "credentials": {
+        "postgres": {
+          "id": "MwC1yijgmrukymoC",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "2f9VVE320st50QIb",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/2f9VVE320st50QIb",
+          "cachedResultName": "Train_Agent_on_New_FAQs"
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1232,
+        336
+      ],
+      "id": "6c39b00a-2b40-49ed-8639-76439575b17f",
+      "name": "Train New FAQs"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Clean final reply text =====\nlet text = ($json.answer || \"\")\n  .replace(/\\\\n/g, \"\\n\")\n  .replace(/\\\\r/g, \"\")\n  .trim();\n\nif (!text) {\n  text = \"I'm sorry, I don't have an answer for that right now.\";\n}\n\nreturn [\n  {\n    json: {\n      reply: text\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        64
+      ],
+      "id": "edbd2c0b-f0fb-465f-bbbd-4c56cb6ea7cb",
+      "name": "Clean Agent response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Map the question message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map the question message": {
+      "main": [
+        [
+          {
+            "node": "Normalize SAP term",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize SAP term": {
+      "main": [
+        [
+          {
+            "node": "Embed User Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed User Question": {
+      "main": [
+        [
+          {
+            "node": "Prepare Vector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Vector": {
+      "main": [
+        [
+          {
+            "node": "Get the Q and A from DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get the Q and A from DB": {
+      "main": [
+        [
+          {
+            "node": "Check if FAQ Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if FAQ Exists": {
+      "main": [
+        [
+          {
+            "node": "Prompt for the Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prompt for Agent2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt for the Agent1": {
+      "main": [
+        [
+          {
+            "node": "Elaborate the Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Elaborate the Answer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Elaborate the Answer": {
+      "main": [
+        [
+          {
+            "node": "Change keyword",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Change keyword": {
+      "main": [
+        [
+          {
+            "node": "Respond to Chat Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt for Agent2": {
+      "main": [
+        [
+          {
+            "node": "Generate Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Generate Answer",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Generate Answer",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Answer": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Clean Agent response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save New FAQ to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save New FAQ to DB": {
+      "main": [
+        [
+          {
+            "node": "Train New FAQs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Agent response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Chat Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e5bdf9ba-be5b-49ac-a806-52fd7f4ad296",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "94334e2d77c2e31e77797d8979cf8371d331b9c03663f35ade81039ef25a7154"
+  },
+  "id": "7SqoCyqfbwRYjLew",
+  "tags": []
+}
